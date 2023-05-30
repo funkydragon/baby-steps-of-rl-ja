@@ -17,14 +17,16 @@ class DeepQNetworkAgent(FNAgent):
         self._teacher_model = None
 
     def initialize(self, experiences, optimizer):
-        feature_shape = experiences[0].s.shape
+        #
+        # optimizerはDeepQNetworkTrainerのbegin_trainからわたされる
+        feature_shape = experiences[0].s.shape  # make_modelのinput_shapeに渡される
         self.make_model(feature_shape)
         self.model.compile(optimizer, loss="mse")
         self.initialized = True
         print("Done initialization. From now, begin training!")
 
     def make_model(self, feature_shape):
-        normal = K.initializers.glorot_normal()
+        normal = K.initializers.glorot_normal()  # 活性化関数の初期化パラメータGlorot
         model = K.Sequential()
         model.add(K.layers.Conv2D(
             32, kernel_size=8, strides=4, padding="same",
@@ -45,6 +47,9 @@ class DeepQNetworkAgent(FNAgent):
                                  kernel_initializer=normal))
         self.model = model
         self._teacher_model = K.models.clone_model(self.model)
+            # 学習を安定化させるため、遷移先の価値を、モデル本体ではなく、一定期間固定されたteacherモデルのパラメータから
+            # 算出するFixed Target Q-Networkの手法
+            # .clone_model: モデルのクローン作成（ウェイトは継承されない）
 
     def estimate(self, state):
         return self.model.predict(np.array([state]))[0]
@@ -62,14 +67,15 @@ class DeepQNetworkAgent(FNAgent):
                 reward += gamma * np.max(future[i])
             estimateds[i][e.a] = reward
 
-        loss = self.model.train_on_batch(states, estimateds)
+        loss = self.model.train_on_batch(states, estimateds)  # 訓練誤差が帰ってくる？
         return loss
 
     def update_teacher(self):
-        self._teacher_model.set_weights(self.model.get_weights())
+        self._teacher_model.set_weights(self.model.get_weights())  # 本体モデルのウェイトで更新
 
 
 class DeepQNetworkAgentTest(DeepQNetworkAgent):
+    # CNNの学習は時間がかかるため、ネットワーク構造（make_model）以外の箇所の挙動を事前にテストするためのAgent
 
     def __init__(self, epsilon, actions):
         super().__init__(epsilon, actions)
@@ -86,6 +92,7 @@ class DeepQNetworkAgentTest(DeepQNetworkAgent):
 
 
 class CatcherObserver(Observer):
+        # 時系列に並んだ４つの画面フレームをまとめる処理
 
     def __init__(self, env, width, height, frame_count):
         super().__init__(env)
@@ -146,18 +153,19 @@ class DeepQNetworkTrainer(Trainer):
         self.loss = 0
 
     def begin_train(self, episode, agent):
-        optimizer = K.optimizers.Adam(lr=self.learning_rate, clipvalue=1.0)
+        optimizer = K.optimizers.Adam(lr=self.learning_rate, clipvalue=1.0)  # Optimizer=Adam
         agent.initialize(self.experiences, optimizer)
         self.logger.set_model(agent.model)
         agent.epsilon = self.initial_epsilon
-        self.training_episode -= episode
+        self.training_episode -= episode  # 既に進んだエピソード分だけ、training_episode(=episode_count=1200)から引く？
 
     def step(self, episode, step_count, agent, experience):
         if self.training:
             batch = random.sample(self.experiences, self.batch_size)
-            self.loss += agent.update(batch, self.gamma)
+            self.loss += agent.update(batch, self.gamma)  # 訓練損失に追加？
 
     def episode_end(self, episode, step_count, agent):
+            # step_count: 各episodeがdoneまでにかかったstep数
         reward = sum([e.r for e in self.get_recent(step_count)])
         self.loss = self.loss / step_count
         self.reward_log.append(reward)
@@ -173,7 +181,7 @@ class DeepQNetworkTrainer(Trainer):
 
             diff = (self.initial_epsilon - self.final_epsilon)
             decay = diff / self.training_episode
-            agent.epsilon = max(agent.epsilon - decay, self.final_epsilon)
+            agent.epsilon = max(agent.epsilon - decay, self.final_epsilon)  # 訓練進行に合わせてepsilonを減衰
 
         if self.is_event(episode, self.report_interval):
             recent_rewards = self.reward_log[-self.report_interval:]
