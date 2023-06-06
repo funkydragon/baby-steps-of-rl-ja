@@ -15,20 +15,20 @@ class PolicyGradientAgent(FNAgent):
 
     def __init__(self, actions):
         # PolicyGradientAgent uses self policy (doesn't use epsilon).
-        super().__init__(epsilon=0.0, actions=actions)
-        self.estimate_probs = True
-        self.scaler = StandardScaler()
-        self._updater = None
+        super().__init__(epsilon=0.0, actions=actions)  # epsilon=0、すべての行動は戦略に基づき決定
+        self.estimate_probs = True  # 予測対象は行動確率。FNAgentのpolicyで使う
+        self.scaler = StandardScaler()  # 後のscalar.fit(x)でxの標準化
+        self._updater = None  # 後のset_updaterで定義
 
     def save(self, model_path):
         super().save(model_path)
         joblib.dump(self.scaler, self.scaler_path(model_path))
 
     @classmethod
-    def load(cls, env, model_path):
+    def load(cls, env, model_path):  # 環境とパスを入力として、agentとモデルをロード（playで使う）
         actions = list(range(env.action_space.n))
-        agent = cls(actions)
-        agent.model = K.models.load_model(model_path)
+        agent = cls(actions)  # __init__(self, actions)が参照されるので、agent = PolicyGradientAgent(actions)と同じ効果？
+        agent.model = K.models.load_model(model_path)  # モデルのロード
         agent.initialized = True
         agent.scaler = joblib.load(agent.scaler_path(model_path))
         return agent
@@ -38,37 +38,53 @@ class PolicyGradientAgent(FNAgent):
         fname += "_scaler.pkl"
         return fname
 
-    def initialize(self, experiences, optimizer):
+    def initialize(self, experiences, optimizer):  # モデル（価値関数）の初期化（モデル構築、正規化）
         states = np.vstack([e.s for e in experiences])
         feature_size = states.shape[1]
         self.model = K.models.Sequential([
             K.layers.Dense(10, activation="relu", input_shape=(feature_size,)),
             K.layers.Dense(10, activation="relu"),
             K.layers.Dense(len(self.actions), activation="softmax")
+            # 入力：states
+            # 出力：今回は、出力は各状態の行動の価値ではなく、各行動の確率。そのため活性化関数はsoftmax
         ])
-        self.set_updater(optimizer)
-        self.scaler.fit(states)
+        self.set_updater(optimizer)  # オプティマイザーにAdamsを指定して方策パラメータ更新
+        self.scaler.fit(states)  # statesの正規化
         self.initialized = True
         print("Done initialization. From now, begin training!")
 
-    def set_updater(self, optimizer):
+    def set_updater(self, optimizer):  # 方策パラメータの更新
         actions = tf.compat.v1.placeholder(shape=(None), dtype="int32")
         rewards = tf.compat.v1.placeholder(shape=(None), dtype="float32")
+            # プレースホルダーの設定
+            # 注意：compat.v1.placeholderはTF2のeager executionとcompatibleでない
+            # To migrate to TF2, rewrite the code to be compatible with eager execution.
+            # https://www.tensorflow.org/api_docs/python/tf/compat/v1/placeholder
         one_hot_actions = tf.one_hot(actions, len(self.actions), axis=1)
+            # tf.one_hot: indicesで示した部分をon_value、それ以外をoff_value
+            # 今回の場合、len(self.actions)のサイズのセルのうち、actionsを1, それ以外を0（図4-28）
+            # でも、actionsはlist(range(env.action_space.n))ではないのか？理解できない
+            # https://j138i.com/tf-one-hot
         action_probs = self.model.output
         selected_action_probs = tf.reduce_sum(one_hot_actions * action_probs,
-                                              axis=1)
-        clipped = tf.clip_by_value(selected_action_probs, 1e-10, 1.0)
-        loss = - tf.math.log(clipped) * rewards
-        loss = tf.reduce_mean(loss)
+                                              axis=1)  # 各行動の確率pi(a|s)
+        clipped = tf.clip_by_value(selected_action_probs, 1e-10, 1.0)  # log 0 を避けるため、確率地の範囲を調整
+        loss = - tf.math.log(clipped) * rewards  # log pi(a|s) Q(s,a)
+        loss = tf.reduce_mean(loss)  # E[log pi(a|s) Q(s,a)]
 
         updates = optimizer.get_updates(loss=loss,
                                         params=self.model.trainable_weights)
+            # 勾配計算の完了: Delta E[log pi(a|s) Q(s,a)]
+            # get_updates:  https://github.com/keras-team/keras/blob/v2.12.0/keras/optimizers/legacy/optimizer_v2.py#L868-L878
+
         self._updater = K.backend.function(
                                         inputs=[self.model.input,
                                                 actions, rewards],
                                         outputs=[loss],
                                         updates=updates)
+            # 状態（self.model.input）と実際の行動（actions）、その結果の価値（rewards）を引数として、
+            # パラメータの更新（updates）を行う関数を定義（後のupdateの中で使う）
+            # kares.backend：イマイチよくわからない。おそらく、モジュール内のこれまでの記述を関数にまとめる役割
 
     def estimate(self, s):
         normalized = self.scaler.transform(s)
@@ -80,6 +96,7 @@ class PolicyGradientAgent(FNAgent):
         actions = np.array(actions)
         rewards = np.array(rewards)
         self._updater([normalizeds, actions, rewards])
+            # [状態, 実際の行動（actions）, その結果の価値（rewards）]を引数としてパラメータの更新を行う関数（set_updaterで定義）
 
 
 class CartPoleObserver(Observer):

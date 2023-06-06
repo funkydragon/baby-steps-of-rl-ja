@@ -51,38 +51,55 @@ class ActorCriticAgent(FNAgent):
         model.add(K.layers.Dense(256, kernel_initializer=normal,
                                  activation="relu"))
 
+        # Actor層
         actor_layer = K.layers.Dense(len(self.actions),
                                      kernel_initializer=normal)
-        action_evals = actor_layer(model.output)
-        actions = SampleLayer()(action_evals)
+        action_evals = actor_layer(model.output)  # Q(s,a)
+        actions = SampleLayer()(action_evals)  # 行動評価（action_evals）から行動（actions）を選択（後で定義）
 
+        # Critic層
         critic_layer = K.layers.Dense(1, kernel_initializer=normal)
-        values = critic_layer(model.output)
+        values = critic_layer(model.output)  # V(s)
 
         self.model = K.Model(inputs=model.input,
                              outputs=[actions, action_evals, values])
 
     def set_updater(self, optimizer,
                     value_loss_weight=1.0, entropy_weight=0.1):
+
         actions = tf.compat.v1.placeholder(shape=(None), dtype="int32")
         values = tf.compat.v1.placeholder(shape=(None), dtype="float32")
 
         _, action_evals, estimateds = self.model.output
+            # outputs=[actions, action_evals, values(estimated)]
 
         neg_logs = tf.nn.sparse_softmax_cross_entropy_with_logits(
                         logits=action_evals, labels=actions)
-        # tf.stop_gradient: Prevent policy_loss influences critic_layer.
+            # sparse_softmax_cross_entropy_with_logits: Computes sparse softmax cross entropy between logits and labels.
+            # -log pi(a|s)
+
         advantages = values - tf.stop_gradient(estimateds)
+            # アドバンテージ＝ -log pi(a|s) - estimated V(s)
+            # stop_gradient: Stops gradient computation（？）
+            #                Prevent policy_loss influences critic_layer.Actor側の目的関数（policy_loss）
+            #                からきた勾配更新がCritic側にも適用されることを防ぐため
 
         policy_loss = tf.reduce_mean(neg_logs * advantages)
-        value_loss = tf.keras.losses.MeanSquaredError()(values, estimateds)
-        action_entropy = tf.reduce_mean(self.categorical_entropy(action_evals))
+            # Actorの目的関数: max E[-log pi(a|s) * advantages]
 
+        value_loss = tf.keras.losses.MeanSquaredError()(values, estimateds)
+            # Criticの目的関数: min mean-squared-error of V(s) and estimated V(s)
+
+        action_entropy = tf.reduce_mean(self.categorical_entropy(action_evals))
         loss = policy_loss + value_loss_weight * value_loss
         loss -= entropy_weight * action_entropy
+            # ActorとCriticを同時に更新するために２つの目的関数を合計（loss）
+            # 行動選択が１つに偏っている状況（＝過学習）を防ぐため、action_entropyを引く。
+            # categorical_entropy()は後で定義
 
         updates = optimizer.get_updates(loss=loss,
                                         params=self.model.trainable_weights)
+            # get_updates:  https://github.com/keras-team/keras/blob/v2.12.0/keras/optimizers/legacy/optimizer_v2.py#L868-L878
 
         self._updater = K.backend.function(
                                         inputs=[self.model.input,
@@ -94,6 +111,7 @@ class ActorCriticAgent(FNAgent):
                                                  tf.reduce_mean(advantages),
                                                  action_entropy],
                                         updates=updates)
+            # kares.backend：イマイチよくわからない。おそらく、モジュール内のこれまでの記述を関数にまとめる役割
 
     def categorical_entropy(self, logits):
         """
@@ -122,6 +140,8 @@ class ActorCriticAgent(FNAgent):
 
 
 class SampleLayer(K.layers.Layer):
+    # 行動評価（action_evals）から行動（actions）を選択するための層
+    # 過学習を避けるため、行動評価にノイズを乗せてサンプリング（Gumbel Max Trick）
 
     def __init__(self, **kwargs):
         self.output_dim = 1  # sample one action from evaluations

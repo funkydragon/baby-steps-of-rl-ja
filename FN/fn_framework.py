@@ -31,8 +31,8 @@ class FNAgent():
     def save(self, model_path):  # model_pathにモデルの保存
         self.model.save(model_path, overwrite=True, include_optimizer=False)
 
-    @classmethod  # クラスメソッドの宣言（インスタンスを作らずに直接メソッドを呼び出せる）
-    def load(cls, env, model_path, epsilon=0.0001):  # 環境とパスを入力として、agentとモデルをロード
+    @classmethod  # クラスメソッドの宣言（インスタンスを作らずにクラスから直接メソッドを呼び出せる）
+    def load(cls, env, model_path, epsilon=0.0001):  # 環境とパスを入力として、agentとモデルをロード（playで使う）
         actions = list(range(env.action_space.n))  # 環境のaction_space数からaction番号リスト（actions）を作成
         agent = cls(epsilon, actions)  # actionsからagentのロード
         agent.model = K.models.load_model(model_path)  # model_pathからモデルのロード（agent.model）

@@ -23,7 +23,7 @@ class ValueFunctionAgent(FNAgent):
         return agent
 
     def initialize(self, experiences):  # モデル（価値関数）の初期化（モデル構築、正規化）
-        scaler = StandardScaler()  # データの標準化
+        scaler = StandardScaler()  # 後のscalar.fit(x)でxの標準化
         estimator = MLPRegressor(hidden_layer_sizes=(10, 10), max_iter=1)
             # ノード数10の隠れ層 x 2
             # max_iter: 最大何回学習を行うか
@@ -84,6 +84,7 @@ class ValueFunctionAgent(FNAgent):
         states = self.model.named_steps["scaler"].transform(states)  # 正規化処理
         self.model.named_steps["estimator"].partial_fit(states, estimateds)
             # TD誤差（statesからのestimatedsと更新後のestimatedsの平均二乗誤差）が最小となるようにパラメータ調整
+            # 入力：states, 出力：estimateds
             # partial_fit: 与えたデータに対して1エポックの学習。fitと違い、classesを引数に与える必要。
             #               fitだと、これまでの学習結果をリセットしてゼロから学習してしまう
             # named_steps: pipelineの各処理の名前をkeyとして各処理のオブジェクト？を取り出す
