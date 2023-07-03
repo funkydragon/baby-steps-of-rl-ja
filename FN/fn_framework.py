@@ -22,13 +22,13 @@ class FNAgent():
     # play（学習済みのモデルの動作確認）
 
     def __init__(self, epsilon, actions):
-        self.epsilon = epsilon
-        self.actions = actions
+        self.epsilon = epsilon  # loadで指定
+        self.actions = actions  # train, loadで指定
         self.model = None
         self.estimate_probs = False
         self.initialized = False
 
-    def save(self, model_path):  # model_pathにモデルの保存
+    def save(self, model_path):  # model_path: mainでfile_nameで指定し、Loggerのpath_ofでパス作成
         self.model.save(model_path, overwrite=True, include_optimizer=False)
 
     @classmethod  # クラスメソッドの宣言（インスタンスを作らずにクラスから直接メソッドを呼び出せる）
@@ -86,7 +86,7 @@ class Trainer():  # Agentにデータを与えて訓練（train_loop）
         self.buffer_size = buffer_size  # 経験を格納するexperiencesのサイズ
         self.batch_size = batch_size  # １回の学習のためにexperiencesから取り出すデータの大きさ（experience replayのため）
         self.gamma = gamma
-        self.report_interval = report_interval  # 未確認
+        self.report_interval = report_interval  # 直近report_interval分（episode数）の、各step、各episodeの報酬計の平均・分散の表示
         self.logger = Logger(log_dir, self.trainer_name)  # Loggerの起動？（log_dirにTrainer名でログ保存）
         self.experiences = deque(maxlen=buffer_size)  # 左右からappend可能なコンテナ, 古い順に削除される, maxlenでサイズ指定
         self.training = False
@@ -106,75 +106,94 @@ class Trainer():  # Agentにデータを与えて訓練（train_loop）
         # episode分だけ学習ループを実施
         # 各episodeでは、buffer_size分experiencesが蓄積するか、initial_count分エピソードを消化したら学習開始
         # 学習はstep内のupdate（Agentで定義）で。
-        # observe_interval:プレイ中の画面（状態）の格納頻度
+        # observe_interval:プレイ中の画面（状態）の格納頻度（framesにsを追加）
 
         self.experiences = deque(maxlen=self.buffer_size)
         self.training = False
-        self.training_count = 0
-        self.reward_log = []
-        frames = []  # 未確認
+        self.training_count = 0  # 訓練開始後のepisode数
+        self.reward_log = []  # 各episodeの報酬計の履歴
+        frames = []  # observe_intervalごとにプレイ中の画面（状態）を格納
 
         for i in range(episode):
             s = env.reset()
             done = False
             step_count = 0
             self.episode_begin(i, agent)  # エピソード開始
+
             while not done:
                 if render:
                     env.render()
-                if self.training and observe_interval > 0 and\  # i)訓練中 + ii)格納頻度>0 + iii)格納のタイミング
+
+                # プレイ画面の格納
+                    # i)訓練中 + ii)格納頻度>0 + iii)格納のタイミング  ⇒ framesにsを追加
+                if self.training and observe_interval > 0 and\
                    (self.training_count == 1 or
                     self.training_count % observe_interval == 0):
-                    frames.append(s)  # framesにsを追加
+                    frames.append(s)
 
+                # 政策決定、env.step、experiences追加
                 a = agent.policy(s)
                 n_state, reward, done, info = env.step(a)
                 e = Experience(s, a, reward, n_state, done)
                 self.experiences.append(e)  # experiencesに経験Experienceを追加
 
-                if not self.training and \  # i)訓練外 + ii)experiencesのサイズがbuffer_sizeに到達
+                # 訓練開始タイミングの制御
+                    # i)訓練外 + ii)experiencesのサイズがbuffer_sizeに到達  ⇒ 訓練開始
+                if not self.training and \
                    len(self.experiences) == self.buffer_size:
-                    self.begin_train(i, agent)  # 訓練開始
+                    self.begin_train(i, agent)
                     self.training = True
 
-                self.step(i, step_count, agent, e)
+                # 学習
+                    # 訓練開始後のみ
                     # experiencesからbatch_size分のbatchをサンプリング、update（学習、Agent内で定義）を実行
+                self.step(i, step_count, agent, e)
 
+                # 次ステップへの処理
                 s = n_state
                 step_count += 1
 
             else:  # done=Trueの場合
+
+                # エピソード終了処理（報酬計の計算・記録など）
                 self.episode_end(i, step_count, agent)  # 各Trainerで定義
 
-                if not self.training and \  # i)訓練外 + ii)エピソード数がinitial_countに到達
+                # i)訓練外 + ii)エピソード数がinitial_countに到達  ⇒ 訓練開始
+                if not self.training and \
                    initial_count > 0 and i >= initial_count:
-                    self.begin_train(i, agent)  # 訓練開始
+                    self.begin_train(i, agent)
                     self.training = True
 
-                if self.training:  # 訓練中
+                # 訓練中 + framesの長さが正  ⇒ 描画？ frames初期化
+                if self.training:
                     if len(frames) > 0:  # framesの長さが正
                         self.logger.write_image(self.training_count,  # Logger()で定義
                                                 frames)
                         frames = []  # frames初期化
                     self.training_count += 1  # training_count+1
 
-    def episode_begin(self, episode, agent):  # エピソード開始
+    # エピソード開始
+    def episode_begin(self, episode, agent):
         pass
 
-    def begin_train(self, episode, agent):  # 訓練開始
+    # 訓練開始
+    def begin_train(self, episode, agent):
         pass
 
+    # experiencesからbatch_size分のbatchをサンプリング、update（学習）を実行
     def step(self, episode, step_count, agent, experience):
-        # experiencesからbatch_size分のbatchをサンプリング、update（学習）を実行
         pass
 
-    def episode_end(self, episode, step_count, agent):  # エピソード終了
+    # エピソード終了
+    def episode_end(self, episode, step_count, agent):
         pass
 
-    def is_event(self, count, interval):  # 未確認
+    # count数がintervalごとにTrue（使い方は各Agentで）
+    def is_event(self, count, interval):
         return True if count != 0 and count % interval == 0 else False
 
-    def get_recent(self, count):  # 直近のcount分の経験を返す
+    # 直近のcount分の経験を返す
+    def get_recent(self, count):
         recent = range(len(self.experiences) - count, len(self.experiences))
         return [self.experiences[i] for i in recent]
 
@@ -220,6 +239,7 @@ class Logger():
             if not os.path.exists(self.log_dir):  # log_dirに相当するディレクトリがなければ作成
                 os.mkdir(self.log_dir)
 
+        # TensorBoardコールバックの呼び出し
         self._callback = tf.compat.v1.keras.callbacks.TensorBoard(
                             self.log_dir)
 
@@ -233,6 +253,7 @@ class Logger():
     def path_of(self, file_name):
         return os.path.join(self.log_dir, file_name)
 
+    # 各step、各episodeのvalue（報酬計など）の平均・分散の表示
     def describe(self, name, values, episode=-1, step=-1):
         mean = np.round(np.mean(values), 3)
         std = np.round(np.std(values), 3)
@@ -262,6 +283,7 @@ class Logger():
         plt.legend(loc="best")
         plt.show()
 
+    # TensorBoardのsummaryを使ったサマリ表示
     def write(self, index, name, value):
         summary = tf.compat.v1.Summary()
         summary_value = summary.value.add()

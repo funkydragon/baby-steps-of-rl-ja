@@ -54,20 +54,21 @@ class DeepQNetworkAgent(FNAgent):
     def estimate(self, state):
         return self.model.predict(np.array([state]))[0]
 
-    def update(self, experiences, gamma):
+    def update(self, experiences, gamma):  # 引数experiencesには、self.experiencesからサンプルしたバッジ
         states = np.array([e.s for e in experiences])
         n_states = np.array([e.n_s for e in experiences])
 
-        estimateds = self.model.predict(states)
-        future = self._teacher_model.predict(n_states)
+        estimateds = self.model.predict(states)  # 現モデルによる、sに対するactionsそれぞれの価値
+        future = self._teacher_model.predict(n_states)  # teacher_modelによる、n_sに対するactionsそれぞれの価値
 
         for i, e in enumerate(experiences):
             reward = e.r
             if not e.d:
-                reward += gamma * np.max(future[i])
-            estimateds[i][e.a] = reward
+                reward += gamma * np.max(future[i])  # teacher_modelでn_sに最大価値を与えるaction
+            estimateds[i][e.a] = reward  # estimatedsのうち選択された行動の部分だけ価値を書き換える
 
-        loss = self.model.train_on_batch(states, estimateds)  # 訓練誤差が帰ってくる？
+        loss = self.model.train_on_batch(states, estimateds)
+            # １つのバッジだけで勾配を更新し、訓練損失を返す、
         return loss
 
     def update_teacher(self):
@@ -130,28 +131,34 @@ class DeepQNetworkTrainer(Trainer):
         self.initial_epsilon = initial_epsilon
         self.final_epsilon = final_epsilon
         self.learning_rate = learning_rate
-        self.teacher_update_freq = teacher_update_freq
+        self.teacher_update_freq = teacher_update_freq  # 訓練開始後からのepisode数がteacher_update_freqごとにupdate_teacher
         self.loss = 0
-        self.training_episode = 0
+        self.training_episode = 0  # epsilonのdecayの制御などに使用
         self._max_reward = -10
 
     def train(self, env, episode_count=1200, initial_count=200,
               test_mode=False, render=False, observe_interval=100):
         actions = list(range(env.action_space.n))
+
+        # test_modeの制御
         if not test_mode:
             agent = DeepQNetworkAgent(1.0, actions)
         else:
             agent = DeepQNetworkAgentTest(1.0, actions)
             observe_interval = 0
-        self.training_episode = episode_count
 
+        self.training_episode = episode_count  # epsilonのdecayに使用
+
+        # episode_count分だけ学習ループを実施
         self.train_loop(env, agent, episode_count, initial_count, render,
                         observe_interval)
         return agent
 
+    # エピソード開始（損失の初期化）
     def episode_begin(self, episode, agent):
         self.loss = 0
 
+    # 訓練開始（optimizerの設定、agentの初期化、モデルの設定など）
     def begin_train(self, episode, agent):
         optimizer = K.optimizers.Adam(lr=self.learning_rate, clipvalue=1.0)  # Optimizer=Adam
         agent.initialize(self.experiences, optimizer)
@@ -159,32 +166,47 @@ class DeepQNetworkTrainer(Trainer):
         agent.epsilon = self.initial_epsilon
         self.training_episode -= episode  # 既に進んだエピソード分だけ、training_episode(=episode_count=1200)から引く？
 
+    # 学習（訓練開始後なら、batchをサンプルして学習）
     def step(self, episode, step_count, agent, experience):
         if self.training:
             batch = random.sample(self.experiences, self.batch_size)
             self.loss += agent.update(batch, self.gamma)  # 訓練損失に追加？
 
+    # エピソード終了
     def episode_end(self, episode, step_count, agent):
             # step_count: 各episodeがdoneまでにかかったstep数
+
+        # 報酬計の計算・記録
         reward = sum([e.r for e in self.get_recent(step_count)])
         self.loss = self.loss / step_count
         self.reward_log.append(reward)
+
+        # 訓練開始後の場合
         if self.training:
+
+            # サマリの表示
             self.logger.write(self.training_count, "loss", self.loss)
             self.logger.write(self.training_count, "reward", reward)
             self.logger.write(self.training_count, "epsilon", agent.epsilon)
+
+            # 報酬計が過去最高の場合 ⇒ 過去最高の更新
             if reward > self._max_reward:
                 agent.save(self.logger.path_of(self.file_name))
                 self._max_reward = reward
+
+            # 訓練開始後からのepisode数がteacher_update_freqごとにupdate_teacher
             if self.is_event(self.training_count, self.teacher_update_freq):
                 agent.update_teacher()
 
+            # epsilonのdecay
             diff = (self.initial_epsilon - self.final_epsilon)
             decay = diff / self.training_episode
             agent.epsilon = max(agent.epsilon - decay, self.final_epsilon)  # 訓練進行に合わせてepsilonを減衰
 
+        # 直近report_interval分（episode数）の、各step、各episodeの報酬計の平均・分散の表示
         if self.is_event(episode, self.report_interval):
             recent_rewards = self.reward_log[-self.report_interval:]
+                # 各episodeの報酬計の履歴のうち直近report_interval分を取り出す
             self.logger.describe("reward", recent_rewards, episode=episode)
 
 
